@@ -1,0 +1,504 @@
+<html><head><base href="/">
+<meta charset="UTF-8">
+<title>ASTROTC BY CALZSAN</title>
+<style>
+    body {
+        margin: 0;
+        background: #000;
+        color: #fff;
+        font-family: Arial, sans-serif;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        min-height: 100vh;
+    }
+    
+    #gameCanvas {
+        border: 2px solid #fff;
+        margin: 20px;
+        cursor: crosshair;
+    }
+    
+    #controls {
+        margin: 20px;
+        padding: 20px;
+        background: #222;
+        border-radius: 8px;
+        text-align: center;
+    }
+    
+    button {
+        background: #4CAF50;
+        color: white;
+        border: none;
+        padding: 10px 20px;
+        border-radius: 4px;
+        cursor: pointer;
+        margin: 5px;
+    }
+    
+    button:hover {
+        background: #45a049;
+    }
+    
+    #status {
+        margin: 10px;
+        padding: 10px;
+        background: #333;
+        border-radius: 4px;
+    }
+</style>
+</head>
+<body>
+    <h1>ASTROTC BY CALZSAN</h1>
+    <div id="controls">
+        <button id="hostGame">Criar Sala</button>
+        <button id="joinGame">Entrar em Sala</button>
+        <div id="status">Status: Pressione Enter para começar</div>
+    </div>
+    <canvas id="gameCanvas" width="1600" height="800"></canvas>
+
+<script src="https://cdn.jsdelivr.net/npm/peerjs@1.4.7/dist/peerjs.min.js"></script>
+<script>
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+const status = document.getElementById('status');
+let peer = null;
+let conn = null;
+let isHost = false;
+let gameStarted = false;
+
+// Game state
+const state = {
+    player1: { x: 100, y: 400, angle: 0, health: 100, lastCloneTime: 0, lastTeleportTime: 0, lastSpeedTime: 0, isSpeedBoosted: false, lastShieldTime: 0 },
+    player2: { x: 1500, y: 400, angle: 0, health: 100, lastCloneTime: 0, lastTeleportTime: 0, lastSpeedTime: 0, isSpeedBoosted: false, lastShieldTime: 0 },
+    bullets: [],
+    clones: [],
+    walls: []
+};
+
+const PLAYER_SIZE = 20;
+const PLAYER_SPEED = 5;
+const SPEED_BOOST_MULTIPLIER = 4;
+const SPEED_BOOST_DURATION = 10000;
+const CLONE_COOLDOWN = 10000;
+const TELEPORT_COOLDOWN = 10000;
+const SPEED_COOLDOWN = 10000;
+const SHIELD_COOLDOWN = 10000;
+
+// Game controls
+let wPressed = false;
+let aPressed = false;
+let sPressed = false;
+let dPressed = false;
+let mouseX = 0;
+let mouseY = 0;
+
+canvas.addEventListener('mousemove', (e) => {
+    const rect = canvas.getBoundingClientRect();
+    mouseX = e.clientX - rect.left;
+    mouseY = e.clientY - rect.top;
+});
+
+function initializePeer() {
+    peer = new Peer(null, {
+        debug: 2
+    });
+    
+    peer.on('open', (id) => {
+        status.textContent = `Seu ID: ${id}`;
+    });
+    
+    peer.on('connection', (connection) => {
+        conn = connection;
+        setupConnection();
+        status.textContent = 'Jogador conectado! Pressione Enter para começar';
+    });
+}
+
+document.getElementById('hostGame').addEventListener('click', () => {
+    initializePeer();
+    isHost = true;
+    status.textContent = 'Aguardando jogador...';
+});
+
+document.getElementById('joinGame').addEventListener('click', () => {
+    const hostId = prompt('Digite o ID da sala:');
+    if (!hostId) return;
+    
+    if (!peer) {
+        initializePeer();
+    }
+    
+    conn = peer.connect(hostId);
+    setupConnection();
+});
+
+function setupConnection() {
+    conn.on('data', (data) => {
+        if (data.type === 'gameState') {
+            if (!isHost) {
+                state.player1 = data.state.player1;
+                state.player2 = data.state.player2;
+                state.bullets = data.state.bullets;
+                state.clones = data.state.clones;
+                state.walls = data.state.walls;
+            }
+        } else if (data.type === 'playerMove') {
+            if (isHost) {
+                state.player2 = data.player;
+            }
+        } else if (data.type === 'shoot') {
+            if (isHost) {
+                addBullet(data.x, data.y, data.angle, false);
+            }
+        } else if (data.type === 'createClones') {
+            if (isHost) {
+                createClones(false);
+            }
+        } else if (data.type === 'teleport') {
+            if (isHost) {
+                teleport(false);
+            }
+        } else if (data.type === 'speedBoost') {
+            if (isHost) {
+                activateSpeedBoost(false);
+            }
+        } else if (data.type === 'shield') {
+            if (isHost) {
+                createShieldWall(false);
+            }
+        }
+    });
+}
+
+function createClones(isPlayer1) {
+    const player = isPlayer1 ? state.player1 : state.player2;
+    const currentTime = Date.now();
+    
+    if (currentTime - player.lastCloneTime < CLONE_COOLDOWN) return;
+    
+    player.lastCloneTime = currentTime;
+    
+    for (let i = 0; i < 3; i++) {
+        state.clones.push({
+            x: player.x,
+            y: player.y,
+            health: 15,
+            isPlayer1: isPlayer1,
+            angle: (Math.PI * 2 * i) / 3
+        });
+    }
+}
+
+function addBullet(x, y, angle, isPlayer1) {
+    state.bullets.push({
+        x,
+        y,
+        angle,
+        isPlayer1
+    });
+}
+
+function teleport(isPlayer1) {
+    const player = isPlayer1 ? state.player1 : state.player2;
+    const currentTime = Date.now();
+    
+    if (currentTime - player.lastTeleportTime < TELEPORT_COOLDOWN) return;
+    
+    player.lastTeleportTime = currentTime;
+    player.x = Math.random() * (canvas.width - PLAYER_SIZE * 2) + PLAYER_SIZE;
+    player.y = Math.random() * (canvas.height - PLAYER_SIZE * 2) + PLAYER_SIZE;
+}
+
+function activateSpeedBoost(isPlayer1) {
+    const player = isPlayer1 ? state.player1 : state.player2;
+    const currentTime = Date.now();
+    
+    if (currentTime - player.lastSpeedTime < SPEED_COOLDOWN) return;
+    
+    player.lastSpeedTime = currentTime;
+    player.isSpeedBoosted = true;
+    
+    setTimeout(() => {
+        player.isSpeedBoosted = false;
+    }, SPEED_BOOST_DURATION);
+}
+
+function createShieldWall(isPlayer1) {
+    const player = isPlayer1 ? state.player1 : state.player2;
+    const currentTime = Date.now();
+    
+    if (currentTime - player.lastShieldTime < SHIELD_COOLDOWN) return;
+    
+    player.lastShieldTime = currentTime;
+    
+    const wall = {
+        x: player.x,
+        y: player.y,
+        angle: player.angle,
+        width: 100,
+        height: 20,
+        isPlayer1: isPlayer1
+    };
+    
+    state.walls.push(wall);
+}
+
+function shoot() {
+    if (!gameStarted) return;
+    
+    const player = isHost ? state.player1 : state.player2;
+    const angle = Math.atan2(mouseY - player.y, mouseX - player.x);
+    
+    if (isHost) {
+        addBullet(player.x, player.y, angle, true);
+    } else {
+        conn.send({ type: 'shoot', x: player.x, y: player.y, angle: angle });
+    }
+}
+
+function keepPlayerInBounds(player) {
+    player.x = Math.max(PLAYER_SIZE, Math.min(canvas.width - PLAYER_SIZE, player.x));
+    player.y = Math.max(PLAYER_SIZE, Math.min(canvas.height - PLAYER_SIZE, player.y));
+}
+
+function update() {
+    if (!gameStarted) return;
+    
+    const player = isHost ? state.player1 : state.player2;
+    const actualSpeed = player.isSpeedBoosted ? PLAYER_SPEED * SPEED_BOOST_MULTIPLIER : PLAYER_SPEED;
+    let moved = false;
+
+    if (wPressed) { player.y -= actualSpeed; moved = true; }
+    if (sPressed) { player.y += actualSpeed; moved = true; }
+    if (aPressed) { player.x -= actualSpeed; moved = true; }
+    if (dPressed) { player.x += actualSpeed; moved = true; }
+
+    keepPlayerInBounds(player);
+
+    player.angle = Math.atan2(mouseY - player.y, mouseX - player.x);
+
+    if (moved && !isHost) {
+        conn.send({ type: 'playerMove', player: player });
+    }
+
+    if (isHost) {
+        for (let i = state.clones.length - 1; i >= 0; i--) {
+            const clone = state.clones[i];
+            const targetPlayer = clone.isPlayer1 ? state.player2 : state.player1;
+            
+            const dx = targetPlayer.x - clone.x;
+            const dy = targetPlayer.y - clone.y;
+            const distance = Math.sqrt(dx * dx + dy * dy);
+            
+            if (distance > 0) {
+                clone.x += (dx / distance) * 3;
+                clone.y += (dy / distance) * 3;
+                clone.angle = Math.atan2(dy, dx);
+            }
+            
+            if (Math.random() < 0.02) {
+                const angle = Math.atan2(targetPlayer.y - clone.y, targetPlayer.x - clone.x);
+                addBullet(clone.x, clone.y, angle, clone.isPlayer1);
+            }
+
+            if (distance < PLAYER_SIZE * 2) {
+                targetPlayer.health -= 1;
+                clone.health -= 1;
+            }
+            
+            if (clone.health <= 0) {
+                state.clones.splice(i, 1);
+            }
+        }
+
+        for (let i = state.bullets.length - 1; i >= 0; i--) {
+            const bullet = state.bullets[i];
+            bullet.x += Math.cos(bullet.angle) * 10;
+            bullet.y += Math.sin(bullet.angle) * 10;
+
+            if (bullet.x < 0 || bullet.x > canvas.width || bullet.y < 0 || bullet.y > canvas.height) {
+                state.bullets.splice(i, 1);
+                continue;
+            }
+
+            const targetPlayer = bullet.isPlayer1 ? state.player2 : state.player1;
+            const dx = bullet.x - targetPlayer.x;
+            const dy = bullet.y - targetPlayer.y;
+            if (Math.sqrt(dx * dx + dy * dy) < PLAYER_SIZE) {
+                targetPlayer.health -= 1;
+                state.bullets.splice(i, 1);
+                
+                if (targetPlayer.health <= 0) {
+                    resetGame();
+                }
+            }
+
+            for (let wall of state.walls) {
+                const wallCos = Math.cos(wall.angle);
+                const wallSin = Math.sin(wall.angle);
+                const rotatedX = (bullet.x - wall.x) * wallCos + (bullet.y - wall.y) * wallSin;
+                const rotatedY = -(bullet.x - wall.x) * wallSin + (bullet.y - wall.y) * wallCos;
+                
+                if (Math.abs(rotatedX) < wall.width/2 && Math.abs(rotatedY) < wall.height/2) {
+                    state.bullets.splice(i, 1);
+                    break;
+                }
+            }
+        }
+
+        if (conn && conn.open) {
+            conn.send({ type: 'gameState', state: state });
+        }
+    }
+}
+
+function resetGame() {
+    state.player1.health = 100;
+    state.player2.health = 100;
+    state.player1.x = 100;
+    state.player1.y = 400;
+    state.player2.x = 1500;
+    state.player2.y = 400;
+    state.bullets = [];
+    state.clones = [];
+    state.walls = [];
+    status.textContent = 'Nova rodada! Pressione Enter para começar';
+    gameStarted = false;
+}
+
+function draw() {
+    ctx.fillStyle = '#000';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    function drawPlayer(x, y, angle, health, isPlayer1) {
+        ctx.save();
+        ctx.translate(x, y);
+        ctx.rotate(angle);
+        
+        ctx.fillStyle = isPlayer1 ? '#4CAF50' : '#0088ff';
+        ctx.beginPath();
+        ctx.arc(0, 0, PLAYER_SIZE, 0, Math.PI * 2);
+        ctx.fill();
+        
+        ctx.fillStyle = '#fff';
+        ctx.fillRect(0, -5, PLAYER_SIZE, 10);
+        
+        ctx.restore();
+
+        ctx.fillStyle = '#ff0000';
+        ctx.fillRect(x - PLAYER_SIZE, y - PLAYER_SIZE - 10, PLAYER_SIZE * 2, 5);
+        ctx.fillStyle = '#00ff00';
+        ctx.fillRect(x - PLAYER_SIZE, y - PLAYER_SIZE - 10, (PLAYER_SIZE * 2) * (health / 100), 5);
+    }
+
+    drawPlayer(state.player1.x, state.player1.y, state.player1.angle, state.player1.health, true);
+    drawPlayer(state.player2.x, state.player2.y, state.player2.angle, state.player2.health, false);
+
+    ctx.fillStyle = '#ff0';
+    state.bullets.forEach(bullet => {
+        ctx.beginPath();
+        ctx.arc(bullet.x, bullet.y, 5, 0, Math.PI * 2);
+        ctx.fill();
+    });
+
+    ctx.fillStyle = '#808080';
+    state.clones.forEach(clone => {
+        ctx.beginPath();
+        ctx.arc(clone.x, clone.y, PLAYER_SIZE * 0.8, 0, Math.PI * 2);
+        ctx.fill();
+        
+        ctx.fillStyle = '#ff0000';
+        ctx.fillRect(clone.x - PLAYER_SIZE, clone.y - PLAYER_SIZE - 10, PLAYER_SIZE * 2, 3);
+        ctx.fillStyle = '#00ff00';
+        ctx.fillRect(clone.x - PLAYER_SIZE, clone.y - PLAYER_SIZE - 10, (PLAYER_SIZE * 2) * (clone.health / 15), 3);
+    });
+
+    ctx.strokeStyle = '#fff';
+    ctx.lineWidth = 2;
+    for (let wall of state.walls) {
+        ctx.save();
+        ctx.translate(wall.x, wall.y);
+        ctx.rotate(wall.angle);
+        ctx.strokeRect(-wall.width/2, -wall.height/2, wall.width, wall.height);
+        ctx.restore();
+    }
+
+    ctx.fillStyle = '#fff';
+    ctx.font = '14px Arial';
+
+    const currentTime = Date.now();
+    
+    const cloneCooldown = Math.max(0, (CLONE_COOLDOWN - (currentTime - state.player1.lastCloneTime)) / 1000);
+    const teleportCooldown = Math.max(0, (TELEPORT_COOLDOWN - (currentTime - state.player1.lastTeleportTime)) / 1000);
+    const speedCooldown = Math.max(0, (SPEED_COOLDOWN - (currentTime - state.player1.lastSpeedTime)) / 1000);
+    const shieldCooldown = Math.max(0, (SHIELD_COOLDOWN - (currentTime - state.player1.lastShieldTime)) / 1000);
+
+    ctx.fillText(`Clone (C): ${Math.ceil(cloneCooldown)}s`, 10, 30);
+    ctx.fillText(`Teleport (T): ${Math.ceil(teleportCooldown)}s`, 10, 50);
+    ctx.fillText(`Speed (V): ${Math.ceil(speedCooldown)}s`, 10, 70);
+    ctx.fillText(`Shield (F): ${Math.ceil(shieldCooldown)}s`, 10, 90);
+}
+
+function gameLoop() {
+    update();
+    draw();
+    requestAnimationFrame(gameLoop);
+}
+
+document.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !gameStarted) {
+        gameStarted = true;
+        status.textContent = 'Jogo iniciado!';
+    }
+    if (e.key.toLowerCase() === 'w') wPressed = true;
+    if (e.key.toLowerCase() === 'a') aPressed = true;
+    if (e.key.toLowerCase() === 's') sPressed = true;
+    if (e.key.toLowerCase() === 'd') dPressed = true;
+});
+
+document.addEventListener('keyup', (e) => {
+    if (e.key.toLowerCase() === 'w') wPressed = false;
+    if (e.key.toLowerCase() === 'a') aPressed = false;
+    if (e.key.toLowerCase() === 's') sPressed = false;
+    if (e.key.toLowerCase() === 'd') dPressed = false;
+});
+
+document.addEventListener('keydown', (e) => {
+    if (e.code === 'Space') {
+        shoot();
+    }
+    if (e.key.toLowerCase() === 'c') {
+        if (isHost) {
+            createClones(true);
+        } else {
+            conn.send({ type: 'createClones' });
+        }
+    }
+    if (e.key.toLowerCase() === 't') {
+        if (isHost) {
+            teleport(true);
+        } else {
+            conn.send({ type: 'teleport' });
+        }
+    }
+    if (e.key.toLowerCase() === 'v') {
+        if (isHost) {
+            activateSpeedBoost(true);
+        } else {
+            conn.send({ type: 'speedBoost' });
+        }
+    }
+    if (e.key.toLowerCase() === 'f') {
+        if (isHost) {
+            createShieldWall(true);
+        } else {
+            conn.send({ type: 'shield' });
+        }
+    }
+});
+
+gameLoop();
+</script>
+</body></html>
